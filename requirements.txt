@@ -1,0 +1,15 @@
+aiohttp
+async_timeout
+uvloop
+bs4
+tornado
+Jinja2>=2.9.5
+arrow
+html5lib
+asyncio-redis>=0.14.3
+aiocache==0.3.2
+motor>=1.1
+schedule
+gunicorn
+cchardet
+requests
