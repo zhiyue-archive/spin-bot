@@ -9,6 +9,8 @@ import urllib
 import urllib.parse
 import re
 import time
+import motor
+from motor.motor_asyncio import AsyncIOMotorClient
 from collections import namedtuple
 
 import aiohttp
@@ -18,37 +20,35 @@ import requests
 import uvloop
 from lxml import html
 try:
-    # Python 3.4.
-    from asyncio import JoinableQueue as Queue
+  # Python 3.4.
+  from asyncio import JoinableQueue as Queue
 except ImportError:
-    # Python 3.5.
-    from asyncio import Queue
+  # Python 3.5.
+  from asyncio import Queue
 
-logging.basicConfig(
-  level=logging.DEBUG
-)
+# logging.basicConfig(
+#   level=logging.DEBUG
+# )
 logger = logging.getLogger(__name__)
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.95 Safari/537.36'
+
+MOTOR_URI = 'mongodb://douban:2256056@127.0.0.1:27018/douban'
 
 
 def lenient_host(host):
   parts = host.split('.')[-2:]
   return ''.join(parts)
 
+
 def is_redirect(response):
   return response.status in (300, 301, 302, 303, 307)
 
-FetchStatistic = namedtuple('FetchStatistic',
-                            ['url',
-                             'next_url',
-                             'status',
-                             'exception',
-                             'size',
-                             'content_type',
-                             'encoding',
-                             'num_urls',
-                             'num_new_urls'])
+
+FetchStatistic = namedtuple('FetchStatistic', [
+  'url', 'next_url', 'status', 'exception', 'size', 'content_type', 'encoding',
+  'num_urls', 'num_new_urls'
+])
 
 
 def get_user_agents(filename):
@@ -56,8 +56,7 @@ def get_user_agents(filename):
     root_folder = os.path.dirname(os.path.dirname(__file__))
   except:
     root_folder = os.path.curdir
-  user_agents_file = os.path.join(
-    os.path.join(root_folder, 'data'), filename)
+  user_agents_file = os.path.join(os.path.join(root_folder, 'data'), filename)
   try:
     with open(user_agents_file) as fp:
       data = [_.strip() for _ in fp.readlines()]
@@ -66,14 +65,29 @@ def get_user_agents(filename):
   return data
 
 
-
 class BaseCrawler(object):
 
-  USER_AGENTS = ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.95 Safari/537.36']
+  USER_AGENTS = [
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.95 Safari/537.36'
+  ]
   ALLOW_CONTENT_TYPE = ('text/html', 'application/xml')
+  ALLOWED_PATHS = None
+  ITEM_PATHS = None
 
-  def __init__(self, roots, exclude=None, strict=True, max_redirect=10, proxy=None,
-               max_tries=4, user_agents=None, max_tasks=10, time_out=15, *, loop=None):
+  def __init__(self,
+               roots,
+               exclude=None,
+               strict=True,
+               max_redirect=10,
+               proxy=None,
+               max_tries=4,
+               user_agents=None,
+               max_tasks=10,
+               time_out=15,
+               allowed_paths=None,
+               item_paths=None,
+               *,
+               loop=None):
     if not loop:
       asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
       self.loop = asyncio.get_event_loop()
@@ -92,6 +106,15 @@ class BaseCrawler(object):
     self.done = []
     self._session = aiohttp.ClientSession(loop=self.loop)
     self.root_domains = set()
+
+    self._allowed_paths = None
+    if allowed_paths:
+      self._allowed_paths = allowed_paths
+
+    self._item_paths = None
+    if item_paths:
+      self._item_paths = item_paths
+
     for root in roots:
       parts = urllib.parse.urlparse(root)
       host, port = urllib.parse.splitport(parts.netloc)
@@ -121,6 +144,18 @@ class BaseCrawler(object):
       self._session = aiohttp.ClientSession(loop=self.loop)
     return self._session
 
+  @property
+  def allowed_paths(self):
+    if self._allowed_paths is None:
+      self._allowed_paths = self.ALLOWED_PATHS
+    return self._allowed_paths
+
+  @property
+  def item_paths(self):
+    if self._item_paths is None:
+      self._item_paths = self.ITEM_PATHS
+    return self._item_paths
+
   def host_okay(self, host):
     """Check if a host should be crawled.
     A literal match (after lowercasing) is always good.  For hosts
@@ -137,21 +172,21 @@ class BaseCrawler(object):
     return self._host_okay_lenient(host)
 
   def _host_okay_strictish(self, host):
-      """Check if a host should be crawled, strict-ish version.
+    """Check if a host should be crawled, strict-ish version.
       This checks for equality modulo an initial 'www.' component.
       """
-      host = host[4:] if host.startswith('www.') else 'www.' + host
-      return host in self.root_domains
+    host = host[4:] if host.startswith('www.') else 'www.' + host
+    return host in self.root_domains
 
   def _host_okay_lenient(self, host):
-      """Check if a host should be crawled, lenient version.
+    """Check if a host should be crawled, lenient version.
       This compares the last two components of the host.
       """
-      return lenient_host(host) in self.root_domains
+    return lenient_host(host) in self.root_domains
 
   def record_statistic(self, fetch_statistic):
-      """Record the FetchStatistic for completed / failed URL."""
-      self.done.append(fetch_statistic)
+    """Record the FetchStatistic for completed / failed URL."""
+    self.done.append(fetch_statistic)
 
   def get_random_user_agent(self):
     if len(self._user_agents) == 1:
@@ -170,8 +205,36 @@ class BaseCrawler(object):
     self.seen_urls.add(url)
     self.q.put_nowait((url, max_redirect, meta))
 
-  def parse_item(self, url, data):
-    pass
+  async def parse_item(self, url, data):
+    allowed, parse_function = self.parse_item_allowed(url)
+    if allowed:
+      await parse_function(url, data)
+
+  def parse_item_allowed(self, url):
+    if self.item_paths:
+      for key, rule in self.item_paths.items():
+        if not re.search(rule, url):
+          continue
+        return True, self.get_parse_function(key)
+    return False, None
+
+  def get_parse_function(self, name):
+    parse_function_name = 'parse_{}'.format(name)
+    if hasattr(self, parse_function_name):
+      return getattr(self, parse_function_name)
+    logger.error('Not Implemented method: %r', parse_function_name)
+    raise NotImplementedError
+
+  def path_allowed(self, url):
+    from ipdb import set_trace
+    set_trace(context=7)
+    
+    if self.allowed_paths:
+      for rule in self.allowed_paths:
+        if not re.search(rule, url):
+          continue
+        return True
+    return False
 
   async def parse(self, url, response, **kwargs):
     links = set()
@@ -189,9 +252,9 @@ class BaseCrawler(object):
       encoding = pdict.get('charset', 'utf-8')
       if content_type in self.ALLOW_CONTENT_TYPE:
         data = await response.text()
-        # from ipdb import set_trace; set_trace()
+        from ipdb import set_trace; set_trace()
         links = await self._parse_links(response.url, data)
-        self.parse_item(url, data)
+        await self.parse_item(url, data)
 
     stat = FetchStatistic(
       url=response.url.human_repr(),
@@ -209,28 +272,24 @@ class BaseCrawler(object):
     links = set()
 
     # Replace href with (?:href|src) to follow image links.
-    urls = set(re.findall(r'''(?i)href=["']([^\s"'<>]+)''',
-                          text))
+    urls = set(re.findall(r'''(?i)href=["']([^\s"'<>]+)''', text))
     if urls:
-      logger.info('got %r distinct urls from %r',
-                  len(urls), base_url)
+      logger.info('got %r distinct urls from %r', len(urls), base_url)
     for url in urls:
       try:
         normalized = urllib.parse.urljoin(base_url.human_repr(), url)
         # normalized = base_url.join(url)
         defragmented, frag = urllib.parse.urldefrag(normalized)
       except TypeError as type_error:
-        logger.error('join error happen on base_url: %r, url: %r',
-                     base_url, url)
+        logger.error('join error happen on base_url: %r, url: %r', base_url,
+                     url)
         continue
       if self.url_allowed(defragmented):
         links.add(defragmented)
     return links
 
-  def _get_headers(self, **kwargs):
-    headers = {
-      'User-Agent': self.get_random_user_agent()
-    }
+  def headers(self, **kwargs):
+    headers = {'User-Agent': self.get_random_user_agent()}
     headers.update(**kwargs)
     return headers
 
@@ -240,7 +299,7 @@ class BaseCrawler(object):
     while tries < self.max_tries:
       try:
         with async_timeout.timeout(self.time_out):
-          headers = self._get_headers()
+          headers = self.headers()
           response = await self.session.get(
             url, headers=headers, proxy=self.proxy, allow_redirects=False)
 
@@ -261,32 +320,35 @@ class BaseCrawler(object):
       tries += 1
     else:
       # We never broke out of the loop: all tries failed.
-      logger.error('%r failed after %r tries',
-                   url, self.max_tries)
-      self.record_statistic(FetchStatistic(url=url,
-                                           next_url=None,
-                                           status=None,
-                                           exception=exception,
-                                           size=0,
-                                           content_type=None,
-                                           encoding=None,
-                                           num_urls=0,
-                                           num_new_urls=0))
+      logger.error('%r failed after %r tries', url, self.max_tries)
+      self.record_statistic(
+        FetchStatistic(
+          url=url,
+          next_url=None,
+          status=None,
+          exception=exception,
+          size=0,
+          content_type=None,
+          encoding=None,
+          num_urls=0,
+          num_new_urls=0))
       return
 
     try:
       if is_redirect(response):
         location = response.headers['location']
         next_url = urllib.parse.urljoin(url, location)
-        self.record_statistic(FetchStatistic(url=url,
-                                             next_url=next_url,
-                                             status=response.status,
-                                             exception=None,
-                                             size=0,
-                                             content_type=None,
-                                             encoding=None,
-                                             num_urls=0,
-                                             num_new_urls=0))
+        self.record_statistic(
+          FetchStatistic(
+            url=url,
+            next_url=next_url,
+            status=response.status,
+            exception=None,
+            size=0,
+            content_type=None,
+            encoding=None,
+            num_urls=0,
+            num_new_urls=0))
 
         if next_url in self.seen_urls:
           return
@@ -294,8 +356,7 @@ class BaseCrawler(object):
           logger.info('redirect to %r from %r', next_url, url)
           self.add_url(next_url, max_redirect - 1)
         else:
-          logger.error('redirect limit reached for %r from %r',
-                       next_url, url)
+          logger.error('redirect limit reached for %r from %r', next_url, url)
       else:
         stat, links = await self.parse(url, response)
         self.record_statistic(stat)
@@ -326,11 +387,12 @@ class BaseCrawler(object):
     if not self.host_okay(host):
       logger.debug('skipping non-root host in %r', url)
       return False
-    return True
+    return self.path_allowed(url)
 
   async def crawl(self):
-    workers = [asyncio.Task(self.work(), loop=self.loop)
-               for _ in range(self.max_tasks)]
+    workers = [
+      asyncio.Task(self.work(), loop=self.loop) for _ in range(self.max_tasks)
+    ]
 
     self.t0 = time.time()
     await self.q.join()
@@ -341,35 +403,76 @@ class BaseCrawler(object):
 
 class DoubanGroupUserCrawler(BaseCrawler):
 
-  ALLOWED_PATH = [r'/group/\w+/members', r'/group/\w+',]
-  ITEM_PATH = {'group': r'/group/\w+/members'}
+  ALLOWED_PATHS = [
+    r'/group/\w+/members',
+  ]  # r'/group/\w+',]
+  ITEM_PATHS = {'group': r'/group/\w+/members'}
   UserMeta = namedtuple('UserMeta', 'home_url name')
-  Group_BASE_URL = 'https://www.douban.com/group/{}/members'
+  GROUP_BASE_URL = 'https://www.douban.com/group/{}/members'
 
-  def __init__(self, roots, exclude=None, strict=True, max_redirect=10,
-               proxy=None, max_tries=4, user_agents=None, max_tasks=10,
-               time_out=15, allowed_paths=None, item_paths=None,
-               group_ids=None, *, loop=None):
+  def __init__(self,
+               roots,
+               exclude=None,
+               strict=True,
+               max_redirect=10,
+               proxy=None,
+               max_tries=4,
+               user_agents=None,
+               max_tasks=10,
+               time_out=15,
+               allowed_paths=None,
+               item_paths=None,
+               group_ids=None,
+               *,
+               loop=None):
     super(DoubanGroupUserCrawler, self).__init__(
-      roots, exclude, strict, max_redirect, proxy,max_tries, user_agents,
-      max_tasks, time_out, loop=loop)
-    self.allowed_paths = self.ALLOWED_PATH
-    if allowed_paths:
-      self.allowed_paths = allowed_paths
-    self.item_paths = self.ITEM_PATH
-    if item_paths:
-      self.item_paths = item_paths
-    self.users = set()
+      roots,
+      exclude,
+      strict,
+      max_redirect,
+      proxy,
+      max_tries,
+      user_agents,
+      max_tasks,
+      time_out,
+      allowed_paths,
+      item_paths,
+      loop=loop)
+
+    self._users = set()
     self.grou_ids = group_ids
     self.init_roots()
+    self._db = None
+    self._collection = None
+
+  @property
+  def db(self):
+    if self._db is None:
+      mongo_client = AsyncIOMotorClient(MOTOR_URI)
+      self._db = mongo_client.douban
+    return self._db
+
+  @property
+  def users(self):
+    if self._collection is None:
+      self._collection = self.db.users
+    return self._collection
+
+  async def add_user(self, user_meta):
+    await self.users.update_one(
+      {
+        'home_url': user_meta.home_url
+      }, {'$set': {
+        'nick_name': user_meta.name
+      }},
+      upsert=True)
 
   def init_roots(self):
-    self.root_domains.add(self.Group_BASE_URL)
+    self.root_domains.add(self.GROUP_BASE_URL)
     if self.grou_ids:
       for gid in self.grou_ids:
-        root_url = self.Group_BASE_URL.format(gid)
+        root_url = self.GROUP_BASE_URL.format(gid)
         self.add_url(root_url)
-
 
   @property
   def session(self):
@@ -383,58 +486,85 @@ class DoubanGroupUserCrawler(BaseCrawler):
   def get_bid_of_cookies(cls):
     return ''.join(random.sample(string.ascii_letters + string.digits, 11))
 
-
-  def _get_headers(self, **kwargs):
-    headers = super(DoubanGroupUserCrawler, self)._get_headers()
+  def headers(self, **kwargs):
+    headers = super(DoubanGroupUserCrawler, self).headers()
     headers.update({'Host': 'www.douban.com'})
     return headers
 
-  def get_parse_function(self, name):
-    parse_function_name = 'parse_{}'.format(name)
-    if hasattr(self, parse_function_name):
-      return getattr(self, parse_function_name)
-    logger.error('Not Implemented method: %r', parse_function_name)
-    raise NotImplementedError
-
-  def parse_group(self, url, data):
+  async def parse_group(self, url, data, **kwargs):
+    meta = kwargs.get('meta', {})
     tree = html.fromstring(data)
     group_users = tree.cssselect('.nbg')
     if len(group_users) == 0:
       logger.error('Group Users is zero. data:{}'.format(data))
+      self.add_url(url, self.max_redirect, meta)
     for user_ in group_users:
       user_meta = self.UserMeta(user_.attrib['href'],
-                           user_.cssselect('img')[0].attrib['alt'])
-      self.users.add(user_meta)
+                                user_.cssselect('img')[0].attrib['alt'])
+      self._users.add(user_meta)
+      await self.add_user(user_meta)
 
     logger.info('Finish get members of url: {}, members numbers is: {}'.format(
-      url, len(self.users)))
+      url, len(self._users)))
 
-  def parse_item(self, url, data):
-    allowed, parse_function = self.parse_item_allowed(url)
-    if allowed:
-     parse_function(url, data)
 
-  def parse_item_allowed(self, url):
-    if self.item_paths:
-      for key, rule in self.item_paths.items():
-        if not re.search(rule, url):
-          continue
-        return True, self.get_parse_function(key)
-    return False, None
+class CoupletCrawler(BaseCrawler):
+  ALLOWED_PATHS = [
+    r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).*/)',
+  ]
+  ITEM_PATHS = {
+    'couplet':
+    r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).+/\w+\.html)'
+  }
+  Couplet = namedtuple('Couplet', 'first second')
+  couplets = set()
 
-  def path_allowed(self, url):
-    if self.allowed_paths:
-      for rule in self.allowed_paths:
-        if not re.search(rule, url):
-          continue
+  def _has_tag(self, element, key):
+    if element.cssselect(key):
+      return True
+    return False
+
+  def couplet_in_font(self, element):
+    if self._has_tag(element, 'font'):
+      font_tags = element.cssselect('font')
+      if len(font_tags) >= 2:
         return True
     return False
 
+  async def parse_couplet(self, url, data, **kwargs):
+    meta = kwargs.get('meta', {})
+    tree = html.fromstring(data)
+    couplets = tree.cssselect('.content_zw > p')
+    if couplets:
+      for couplet in couplets:
+        couplet_item = None
+        if self.couplet_in_font(couplet):
+          couplet = couplet.cssselect('font')
+          if len(couplet) >= 2:
+            couplet_item = self.Couplet(couplet[0].text, couplet[1].text)
+            self.couplets.add(couplet_item)
+          logger.info('{}, {}'.format(couplet[0].text, couplet[1].text))
+        else:
+          lines = couplet.text_content().split('\n')
+          if len(lines) >= 2:
+            couplet_item = self.Couplet(lines[0].strip(),
+                                        lines[1].strip().split(' ')[0])
 
-  def url_allowed(self, url):
-    allowed = super(DoubanGroupUserCrawler, self).url_allowed(url)
-    if allowed:
-      return self.path_allowed(url)
-    return False
+            logger.info('{}, {}'.format(lines[0].strip(),
+                                        lines[1].strip().split(' ')[0]))
+        if couplet_item:
+          self.couplets.add(couplet_item)
+          continue
+        logger.error('parse failed : {}'.format(couplet.text_content()))
 
-
+    # if len(group_users) == 0:
+    #   logger.error('Group Users is zero. data:{}'.format(data))
+    #   self.add_url(url, self.max_redirect, meta)
+    # for user_ in group_users:
+    #   user_meta = self.UserMeta(user_.attrib['href'],
+    #                        user_.cssselect('img')[0].attrib['alt'])
+    #   self._users.add(user_meta)
+    #   await self.add_user(user_meta)
+    #
+    # logger.info('Finish get members of url: {}, members numbers is: {}'.format(
+    #   url, len(self._users)))
