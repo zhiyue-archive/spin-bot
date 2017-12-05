@@ -19,6 +19,7 @@ import lxml
 import requests
 import uvloop
 from lxml import html
+from spinbot.database.mongodb.motorbase import MotorBase
 try:
   # Python 3.4.
   from asyncio import JoinableQueue as Queue
@@ -26,9 +27,6 @@ except ImportError:
   # Python 3.5.
   from asyncio import Queue
 
-# logging.basicConfig(
-#   level=logging.DEBUG
-# )
 logger = logging.getLogger(__name__)
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.95 Safari/537.36'
@@ -97,7 +95,7 @@ class BaseCrawler(object):
     self.exclude = exclude
     self.strict = strict
     self.max_redirect = max_redirect
-    self.proxy = proxy
+    # self.proxy = proxy
     self.max_tries = max_tries
     self.max_tasks = max_tasks
     self.time_out = time_out
@@ -143,6 +141,12 @@ class BaseCrawler(object):
     if not self._session:
       self._session = aiohttp.ClientSession(loop=self.loop)
     return self._session
+
+  @property
+  def proxy(self):
+    proxy = 'http://{}'.format(requests.get("http://127.0.0.1:5010/get/").text)
+    logger.info(proxy)
+    return proxy
 
   @property
   def allowed_paths(self):
@@ -226,9 +230,6 @@ class BaseCrawler(object):
     raise NotImplementedError
 
   def path_allowed(self, url):
-    from ipdb import set_trace
-    set_trace(context=7)
-    
     if self.allowed_paths:
       for rule in self.allowed_paths:
         if not re.search(rule, url):
@@ -403,44 +404,22 @@ class BaseCrawler(object):
 
 class DoubanGroupUserCrawler(BaseCrawler):
 
-  ALLOWED_PATHS = [
-    r'/group/\w+/members',
-  ]  # r'/group/\w+',]
+  ALLOWED_PATHS = [r'/group/\w+/members', r'/group/\w+/$'] # r'/group/\w+',]
   ITEM_PATHS = {'group': r'/group/\w+/members'}
   UserMeta = namedtuple('UserMeta', 'home_url name')
   GROUP_BASE_URL = 'https://www.douban.com/group/{}/members'
 
-  def __init__(self,
-               roots,
-               exclude=None,
-               strict=True,
-               max_redirect=10,
-               proxy=None,
-               max_tries=4,
-               user_agents=None,
-               max_tasks=10,
-               time_out=15,
-               allowed_paths=None,
-               item_paths=None,
-               group_ids=None,
-               *,
-               loop=None):
+  def __init__(self, roots, exclude=None, strict=True, max_redirect=10,
+               proxy=None, max_tries=4, user_agents=None, max_tasks=10,
+               time_out=15, allowed_paths=None, item_paths=None,
+               group_ids=None, group_range=None, *, loop=None):
     super(DoubanGroupUserCrawler, self).__init__(
-      roots,
-      exclude,
-      strict,
-      max_redirect,
-      proxy,
-      max_tries,
-      user_agents,
-      max_tasks,
-      time_out,
-      allowed_paths,
-      item_paths,
-      loop=loop)
+      roots, exclude, strict, max_redirect, proxy,max_tries, user_agents,
+      max_tasks, time_out, allowed_paths, item_paths, loop=loop)
 
     self._users = set()
     self.grou_ids = group_ids
+    self.group_range= group_range
     self.init_roots()
     self._db = None
     self._collection = None
@@ -448,8 +427,8 @@ class DoubanGroupUserCrawler(BaseCrawler):
   @property
   def db(self):
     if self._db is None:
-      mongo_client = AsyncIOMotorClient(MOTOR_URI)
-      self._db = mongo_client.douban
+      mongo_client = MotorBase()
+      self._db = mongo_client.get_db('douban')
     return self._db
 
   @property
@@ -460,11 +439,7 @@ class DoubanGroupUserCrawler(BaseCrawler):
 
   async def add_user(self, user_meta):
     await self.users.update_one(
-      {
-        'home_url': user_meta.home_url
-      }, {'$set': {
-        'nick_name': user_meta.name
-      }},
+      {'home_url': user_meta.home_url}, {'$set': {'nick_name': user_meta.name}},
       upsert=True)
 
   def init_roots(self):
@@ -474,12 +449,20 @@ class DoubanGroupUserCrawler(BaseCrawler):
         root_url = self.GROUP_BASE_URL.format(gid)
         self.add_url(root_url)
 
+    if self.group_range:
+      start_id = self.group_range[0]
+      end_id = self.group_range[1]
+      for gid in range(start_id, end_id):
+        group_url = self.GROUP_BASE_URL.format(gid)
+        self.add_url(group_url)
+
   @property
   def session(self):
     if not self._session:
       self._session = aiohttp.ClientSession(loop=self.loop)
     cookies = {'bid': DoubanGroupUserCrawler.get_bid_of_cookies()}
     self._session.cookie_jar.update_cookies(cookies)
+    logger.debug(cookies)
     return self._session
 
   @classmethod
@@ -489,6 +472,7 @@ class DoubanGroupUserCrawler(BaseCrawler):
   def headers(self, **kwargs):
     headers = super(DoubanGroupUserCrawler, self).headers()
     headers.update({'Host': 'www.douban.com'})
+    logger.debug(headers)
     return headers
 
   async def parse_group(self, url, data, **kwargs):
@@ -509,13 +493,8 @@ class DoubanGroupUserCrawler(BaseCrawler):
 
 
 class CoupletCrawler(BaseCrawler):
-  ALLOWED_PATHS = [
-    r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).*/)',
-  ]
-  ITEM_PATHS = {
-    'couplet':
-    r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).+/\w+\.html)'
-  }
+  ALLOWED_PATHS = [r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).*/)',]
+  ITEM_PATHS = {'couplet': r'^(http://www\.duiduilian\.com/(?!(zhishi|zixun|jiqiao|qita|guestbook)).+/\w+\.html)'}
   Couplet = namedtuple('Couplet', 'first second')
   couplets = set()
 
@@ -530,6 +509,42 @@ class CoupletCrawler(BaseCrawler):
       if len(font_tags) >= 2:
         return True
     return False
+
+  async def parse_couplet(self, url, data, **kwargs):
+    meta = kwargs.get('meta', {})
+    tree = html.fromstring(data)
+    couplets = tree.cssselect('.content_zw > p')
+    if couplets:
+      for couplet in couplets:
+        couplet_item = None
+        if self.couplet_in_font(couplet):
+          couplet = couplet.cssselect('font')
+          if len(couplet) >= 2:
+            couplet_item = self.Couplet(couplet[0].text, couplet[1].text)
+            self.couplets.add(couplet_item)
+          logger.info('{}, {}'.format(couplet[0].text, couplet[1].text))
+        else:
+          lines = couplet.text_content().split('\n')
+          if len(lines) >= 2:
+            couplet_item = self.Couplet(lines[0].strip(), lines[1].strip().split(' ')[0])
+
+            logger.info('{}, {}'.format(lines[0].strip(), lines[1].strip().split(' ')[0]))
+        if couplet_item:
+          self.couplets.add(couplet_item)
+          continue
+        logger.error('parse failed : {}'.format(couplet.text_content()))
+
+    # if len(group_users) == 0:
+    #   logger.error('Group Users is zero. data:{}'.format(data))
+    #   self.add_url(url, self.max_redirect, meta)
+    # for user_ in group_users:
+    #   user_meta = self.UserMeta(user_.attrib['href'],
+    #                        user_.cssselect('img')[0].attrib['alt'])
+    #   self._users.add(user_meta)
+    #   await self.add_user(user_meta)
+    #
+    # logger.info('Finish get members of url: {}, members numbers is: {}'.format(
+    #   url, len(self._users)))
 
   async def parse_couplet(self, url, data, **kwargs):
     meta = kwargs.get('meta', {})

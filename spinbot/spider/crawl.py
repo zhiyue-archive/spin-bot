@@ -1,4 +1,6 @@
 #!/usr/bin/env python3.4
+# -*- coding: UTF-8 -*-
+# vim:set shiftwidth=2 tabstop=2 expandtab textwidth=79:
 
 """A simple web crawler -- main driver program."""
 
@@ -11,8 +13,9 @@ import logging
 import sys
 import uvloop
 
-from crawler import DoubanGroupUserCrawler, get_user_agents
-from reporting import *
+from spinbot.spider.crawler import DoubanGroupUserCrawler, CoupletCrawler, get_user_agents
+from spinbot.spider.reporting import *
+from spinbot.settings import *
 
 ARGS = argparse.ArgumentParser(description="Web crawler")
 ARGS.add_argument(
@@ -29,10 +32,12 @@ ARGS.add_argument(
     default=10, help='Limit redirection chains (for 301, 302 etc.)')
 ARGS.add_argument(
     '--max_tries', action='store', type=int, metavar='N',
-    default=4, help='Limit retries on network errors')
+    default=CRAWLER_SETTINGS.get('max_tries', 10),
+    help='Limit retries on network errors')
 ARGS.add_argument(
     '--max_tasks', action='store', type=int, metavar='N',
-    default=50, help='Limit concurrent connections')
+    default=CRAWLER_SETTINGS.get('max_tasks', 5),
+    help='Limit concurrent connections')
 ARGS.add_argument(
     '--exclude', action='store', metavar='REGEX',
     help='Exclude matching URLs')
@@ -62,12 +67,13 @@ def main():
     Parse arguments, set up event loop, run crawler, print report.
     """
     args = ARGS.parse_args()
-    if not args.roots:
-        print('Use --help for command line help')
-        return
+    # if not args.roots:
+    #     print('Use --help for command line help')
+    #     return
 
     levels = [logging.ERROR, logging.WARN, logging.INFO, logging.DEBUG]
-    logging.basicConfig(level=levels[min(args.level, len(levels)-1)])
+    # logging.basicConfig(level=levels[min(args.level, len(levels)-1)])
+    logging.basicConfig(level=levels[2])
 
     # if args.iocp:
     #     from asyncio.windows_events import ProactorEventLoop
@@ -89,7 +95,8 @@ def main():
                                      max_tries=args.max_tries,
                                      max_tasks=args.max_tasks,
                                      user_agents=user_agents,
-                                     proxy='http://192.168.1.15:3128',
+                                     proxy='http://127.0.0.1:3128',
+                                     group_range=(10000, 20000),
                                      loop=loop)
     try:
         loop.run_until_complete(crawler.crawl())  # Crawler gonna crawl.
@@ -98,7 +105,7 @@ def main():
         print('\nInterrupted\n')
     finally:
         report(crawler)
-        print('\ncrawler number of users : {} \n'.format(len(crawler.users)))
+        print('\ncrawler number of users : {} \n'.format(len(crawler._users)))
         crawler.close()
 
         # next two lines are required for actual aiohttp resource cleanup
