@@ -1,3 +1,4 @@
+lxml
 aiohttp
 async_timeout
 uvloop
