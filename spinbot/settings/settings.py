@@ -2,6 +2,7 @@
 # -*- coding: UTF-8 -*-
 # vim:set shiftwidth=2 tabstop=2 expandtab textwidth=79:
 import os
+import logging
 
 MOTOR_URI = 'mongodb://127.0.0.1:27017/douban'
 MONGODB = dict(
@@ -12,16 +13,17 @@ MONGODB = dict(
   DATABASE='owllook',
 )
 
+LOG_LEVEL = logging.DEBUG
 
 # crawler settings
 CRAWLER_SETTINGS = {
   'max_tries': 10,
-  'max_tasks': 5,
+  'max_tasks': 50,
 }
 
 
 
 try:
-    from settings_local import *
+    from spinbot.settings.settings_local import *
 except ImportError as e:
     pass

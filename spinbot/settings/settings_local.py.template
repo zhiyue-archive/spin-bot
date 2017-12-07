@@ -1,0 +1,10 @@
+#!/usr/bin/python
+# -*- coding: UTF-8 -*-
+# vim:set shiftwidth=2 tabstop=2 expandtab textwidth=79:
+
+import logging
+import os
+
+DEBUG = True
+
+LOG_LEVEL = logging.DEBUG

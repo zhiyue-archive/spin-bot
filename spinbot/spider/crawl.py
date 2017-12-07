@@ -71,9 +71,9 @@ def main():
     #     print('Use --help for command line help')
     #     return
 
-    levels = [logging.ERROR, logging.WARN, logging.INFO, logging.DEBUG]
+    # levels = [logging.ERROR, logging.WARN, logging.INFO, logging.DEBUG]
     # logging.basicConfig(level=levels[min(args.level, len(levels)-1)])
-    logging.basicConfig(level=levels[2])
+    # logging.basicConfig(level=levels[2])
 
     # if args.iocp:
     #     from asyncio.windows_events import ProactorEventLoop
@@ -96,7 +96,7 @@ def main():
                                      max_tasks=args.max_tasks,
                                      user_agents=user_agents,
                                      proxy='http://127.0.0.1:3128',
-                                     group_range=(10000, 20000),
+                                     group_range=(100000, 600000),
                                      loop=loop)
     try:
         loop.run_until_complete(crawler.crawl())  # Crawler gonna crawl.
